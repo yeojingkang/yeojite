@@ -1,4 +1,10 @@
 /*** includes ***/
+
+// Feature test macros
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -10,6 +16,7 @@
 #include <termios.h>
 #include <errno.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 
 #endif
 
@@ -25,8 +32,19 @@ enum editorKey
     ARROW_LEFT = 0x100,
     ARROW_RIGHT,
     ARROW_UP,
-    ARROW_DOWN
+    ARROW_DOWN,
+    PAGE_UP,
+    PAGE_DOWN,
+    KEY_HOME,
+    KEY_END,
+    KEY_DEL
 };
+
+typedef struct erow
+{
+    int size;
+    char* str;
+} erow;
 
 /*** globals ***/
 struct editorConfig
@@ -34,6 +52,10 @@ struct editorConfig
     int             cx, cy;      // The cursor's position
     int             termRows;
     int             termCols;
+
+    int             numRows;
+    erow            row;
+
     struct termios  userTermios; // The user's original terminal attributes
 } config;
 
@@ -115,6 +137,7 @@ int ReadKey()
     }
 
     // Handle escape sequences
+    /**************************************************************************/
     if (c == '\x1b')
     {
         char seq[3];
@@ -125,17 +148,50 @@ int ReadKey()
 
         if (seq[0] == '[')
         {
+            if (seq[1] >= '0' && seq[1] <= '9')
+            {
+                if (read(STDIN_FILENO, &seq[2], 1) != 1)
+                    return '\x1b';
+
+                if (seq[2] == '~')
+                {
+                    switch (seq[1])
+                    {
+                        case '1':
+                        case '7': return KEY_HOME;
+                        case '4':
+                        case '8': return KEY_END;
+                        case '3': return KEY_DEL;
+                        case '5': return PAGE_UP;
+                        case '6': return PAGE_DOWN;
+                    }
+                }
+            }
+            else
+            {
+                switch (seq[1])
+                {
+                    case 'A': return ARROW_UP;
+                    case 'B': return ARROW_DOWN;
+                    case 'C': return ARROW_RIGHT;
+                    case 'D': return ARROW_LEFT;
+                    case 'H': return KEY_HOME;
+                    case 'F': return KEY_END;
+                }
+            }
+        }
+        else if (seq[0] == 'O')
+        {
             switch (seq[1])
             {
-            case 'A': return ARROW_UP;
-            case 'B': return ARROW_DOWN;
-            case 'C': return ARROW_RIGHT;
-            case 'D': return ARROW_LEFT;
+                case 'H': return KEY_HOME;
+                case 'F': return KEY_END;
             }
         }
 
         return '\x1b';
     }
+    /**************************************************************************/
 
     return c;
 }
@@ -159,7 +215,7 @@ int GetCursorPosition(int *rows, int* cols)
     buf[i] = '\0'; // Null terminate the string
 
     // Check if buffer contains the CPR
-    if (buf[0] != '\x1b' && buf[1] != '[')
+    if (buf[0] != '\x1b' || buf[1] != '[')
         return -1;
 
     // Read the contents into rows and cols
@@ -190,33 +246,81 @@ int GetTerminalSize(int* rows, int* cols)
     return 0;
 }
 
+/*** file i/o ***/
+
+void OpenFile(char* file)
+{
+    FILE* fp = fopen(file, "r");
+
+    if (fp == NULL)
+        Die("Failed to open file (fopen)");
+
+    char* line = NULL;  // The next line in the file
+    size_t cap = 0;     // The max number of chars to read (Param scapegoat)
+    ssize_t len = 0;    // Length of the read line
+
+    len = getline(&line, &cap, fp);
+
+    if (len != -1)
+    {
+        // Count number of chars in the line (excluding \r\n)
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            --len;
+
+        config.row.size = len + 1;
+        config.row.str = malloc(len + 1); // TODO: not freed
+
+        memcpy(config.row.str, line, len);
+        config.row.str[len] = '\0'; // Null terminate the string
+
+        config.numRows = 1;
+    }
+
+    free(line);
+    fclose(fp);
+}
+
 /*** input ***/
 
 void ProcessKey(int c)
 {
     switch (c)
     {
-    case CTRL_KEY('q'):
-        Exit(0);
-        break;
+        case CTRL_KEY('q'):
+            Exit(0);
+            break;
 
-    // Cursor movement
-    case 'h':
-    case ARROW_LEFT:
-        if (config.cx > 0) --config.cx;
-        break;
-    case 'j':
-    case ARROW_DOWN:
-        if (config.cy < config.termRows - 1) ++config.cy;
-        break;
-    case 'k':
-    case ARROW_UP:
-        if (config.cy > 0) --config.cy;
-        break;
-    case 'l':
-    case ARROW_RIGHT:
-        if (config.cx < config.termCols - 1) ++config.cx;
-        break;
+        // Cursor movement
+        case 'h':
+        case ARROW_LEFT:
+            if (config.cx > 0) --config.cx;
+            break;
+        case 'j':
+        case ARROW_DOWN:
+            if (config.cy < config.termRows - 1) ++config.cy;
+            break;
+        case 'k':
+        case ARROW_UP:
+            if (config.cy > 0) --config.cy;
+            break;
+        case 'l':
+        case ARROW_RIGHT:
+            if (config.cx < config.termCols - 1) ++config.cx;
+            break;
+
+        case PAGE_UP:
+            config.cy = 0;
+            break;
+        case PAGE_DOWN:
+            config.cy = config.termRows;
+            break;
+
+        case KEY_HOME:
+            config.cx = 0;
+            break;
+        case KEY_END:
+            config.cx = config.termCols - 1;
+            break;
     }
 }
 
@@ -226,42 +330,55 @@ void DrawRows(estring* buf)
 {
     for (int y = 0; y < config.termRows; ++y)
     {
-        if (y == config.termRows / 2) // Print the welcome message
+        if (y >= config.numRows)
         {
-            char welcome[100];
-            int len = snprintf(welcome, sizeof(welcome),
-                               "YeojiTE version %s", EDITOR_VERSION);
+            if (config.numRows == 0 && y == config.termRows / 2) // Print the welcome message
+            {
+                char welcome[100];
+                int len = snprintf(welcome, sizeof(welcome),
+                                   "YeojiTE version %s", EDITOR_VERSION);
 
-            if (len > config.termCols)
-                len = config.termCols;
+                if (len > config.termCols)
+                    len = config.termCols;
 
-            unsigned int padding = (config.termCols - len) / 2;
+                unsigned int padding = (config.termCols - len) / 2;
 
-            if (padding)
+                if (padding)
+                {
+                    estrAppend(buf, "~", 1);
+                    --padding;
+                }
+
+                // Add whitespaces for padding
+                while (padding--) estrAppend(buf, " ", 1);
+
+                estrAppend(buf, welcome, len);
+            }
+            else if (y == config.termRows - 1) // Print the cursor position
+            {
+                char pos[64];
+                int len = snprintf(pos, sizeof(pos),
+                                   "~ %d:%d", config.cx + 1, config.cy + 1);
+                estrAppend(buf, pos, len);
+            }
+            else
             {
                 estrAppend(buf, "~", 1);
-                --padding;
             }
-
-            // Add whitespaces for padding
-            while (padding--) estrAppend(buf, " ", 1);
-
-            estrAppend(buf, welcome, len);
         }
-        //else if (y == config.termRows - 1) // Print the cursor position
-        //{
-        //    char pos[64];
-        //    int len = snprintf(pos, sizeof(pos), "~ %d:%d", config.cx + 1, config.cy + 1);
-        //    estrAppend(buf, pos, len);
-        //}
         else
         {
-            estrAppend(buf, "~", 1);
+            // Print config.row's content
+            int len = (config.row.size > config.termCols) ? config.termCols
+                                                          : config.row.size;
+
+            estrAppend(buf, config.row.str, len);
         }
 
         estrAppend(buf, "\x1b[K", 3); // Clear from cursor to end of row
+
         if (y < config.termRows - 1)
-            estrAppend(buf, "\r\n", 2);
+            estrAppend(buf, "\r\n", 2); // Move cursor to next line
     }
 }
 
@@ -298,16 +415,22 @@ void PrintScreen()
 void Init()
 {
     config.cx = config.cy = 0;
+    config.numRows = 0;
 
     if (GetTerminalSize(&config.termRows, &config.termCols) == -1)
         Die("Failed to get terminal size (GetTerminalSize)");
 }
 
-int main()
+int main(int argc, char* argv[])
 {
 #if defined __linux__ || defined unix || defined __unix || defined __unix__
     SetRawMode();
     Init();
+
+    if (argc > 1)
+    {
+        OpenFile(argv[1]);
+    }
 
     while (1)
     {
