@@ -66,6 +66,8 @@ void Exit(int retval)
     write(STDOUT_FILENO, "\x1b[2J", 4); // 2J (Erase In Display (4 byte): clear screen)
     write(STDOUT_FILENO, "\x1b[H", 3);  // H (Cursor Position (3 byte): <line>;<column>H)
 
+    write(STDOUT_FILENO, "\033c", 2);   // c (Clear screen(2 byte); for Windows terminal)
+
     exit(retval);
 }
 
