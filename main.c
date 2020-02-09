@@ -56,7 +56,7 @@ struct editorConfig
     int             numRows;     // The number of rows in the buffer
     erow*           row;
 
-    int             currRow;
+    int             currRow;     // The current position of the top row
 
     struct termios  userTermios; // The user's original terminal attributes
 } config;
@@ -327,13 +327,11 @@ void ProcessKey(int c)
             break;
         case 'j':
         case ARROW_DOWN:
-            if (config.cy < config.termRows - 1) ++config.cy;
-            else if (config.currRow < config.numRows - 1) ++config.currRow;
+            if (config.cy < config.numRows - 1) ++config.cy;
             break;
         case 'k':
         case ARROW_UP:
             if (config.cy > 0) --config.cy;
-            else if (config.currRow > 0) --config.currRow;
             break;
         case 'l':
         case ARROW_RIGHT:
@@ -341,10 +339,12 @@ void ProcessKey(int c)
             break;
 
         case PAGE_UP:
-            config.cy = 0;
+            config.cy -= config.termRows + (config.cy - config.currRow);
+            if (config.cy < 0) config.cy = 0;
             break;
         case PAGE_DOWN:
-            config.cy = config.termRows;
+            config.cy += config.termRows + (config.currRow + config.termRows - config.cy - 1);
+            if (config.cy >= config.numRows) config.cy = config.numRows - 1;
             break;
 
         case KEY_HOME:
@@ -365,11 +365,11 @@ void ProcessKey(int c)
 
 void DrawRows(estring* buf)
 {
-    const int endRow = config.currRow + config.termRows;
-
-    for (int y = config.currRow; y < endRow; ++y)
+    for (int y = 0; y < config.termRows; ++y)
     {
-        if (y >= config.numRows)
+        int currRow = y + config.currRow;
+
+        if (currRow >= config.numRows)
         {
             if (config.numRows == 0 && y == config.termRows / 2) // Print the welcome message
             {
@@ -393,13 +393,6 @@ void DrawRows(estring* buf)
 
                 estrAppend(buf, welcome, len);
             }
-            else if (y == config.termRows - 1) // Print the cursor position
-            {
-                char pos[64];
-                int len = snprintf(pos, sizeof(pos),
-                                   "~ %d:%d", config.cx + 1, config.cy + 1);
-                estrAppend(buf, pos, len);
-            }
             else
             {
                 estrAppend(buf, "~", 1);
@@ -408,21 +401,37 @@ void DrawRows(estring* buf)
         else
         {
             // Print config.row's content
-            int len = (config.row[y].size > config.termCols) ? config.termCols
-                                                             : config.row[y].size;
+            int len = (config.row[currRow].size > config.termCols) ? config.termCols
+                                                                   : config.row[currRow].size;
 
-            estrAppend(buf, config.row[y].str, len);
+            estrAppend(buf, config.row[currRow].str, len);
         }
 
         estrAppend(buf, "\x1b[K", 3); // Clear from cursor to end of row
 
-        if (y < endRow - 1)
+        if (y < config.termRows)
             estrAppend(buf, "\r\n", 2); // Move cursor to next line
     }
+
+    // Print the cursor position
+    char pos[64];
+    int len = snprintf(pos, sizeof(pos),
+                       "%3d:%3d", config.cx, config.cy);
+    estrAppend(buf, pos, len);
+}
+
+void UpdateScroll()
+{
+    if (config.cy < config.currRow)
+        config.currRow = config.cy;
+    else if (config.cy >= config.currRow + config.termRows)
+        config.currRow = config.cy - config.termRows + 1;
 }
 
 void PrintScreen()
 {
+    UpdateScroll();
+
     // The content to print to the screen
     estring buffer = ESTR_INIT;
 
@@ -439,7 +448,7 @@ void PrintScreen()
 
     char cursorPos[32];
     int len = snprintf(cursorPos, sizeof(cursorPos),
-                       "\x1b[%d;%dH", config.cy + 1, config.cx + 1);
+                       "\x1b[%d;%dH", (config.cy - config.currRow) + 1, config.cx + 1);
     estrAppend(&buffer, cursorPos, len); // Place cursor at current position
 
     estrAppend(&buffer, "\x1b[?25h", 6); // ?25h (Show cursor)
@@ -460,6 +469,8 @@ void Init()
 
     if (GetTerminalSize(&config.termRows, &config.termCols) == -1)
         Die("Failed to get terminal size (GetTerminalSize)");
+
+    --config.termRows; // Reserve last row for debug printing
 }
 
 int main(int argc, char* argv[])
