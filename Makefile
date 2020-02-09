@@ -1,5 +1,6 @@
 # Macros  =================================
 
+CC=gcc
 CFLAGS=-Wall -Wextra -pedantic -Werror -std=c99
 ERASE=rm
 NAME=editor

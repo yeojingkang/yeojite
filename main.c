@@ -53,8 +53,10 @@ struct editorConfig
     int             termRows;
     int             termCols;
 
-    int             numRows;
-    erow            row;
+    int             numRows;     // The number of rows in the buffer
+    erow*           row;
+
+    int             currRow;
 
     struct termios  userTermios; // The user's original terminal attributes
 } config;
@@ -67,6 +69,17 @@ void Exit(int retval)
     write(STDOUT_FILENO, "\x1b[H", 3);  // H (Cursor Position (3 byte): <line>;<column>H)
 
     write(STDOUT_FILENO, "\033c", 2);   // c (Clear screen(2 byte); for Windows terminal)
+
+    // Free allocated data
+    if (config.row)
+    {
+        while (config.numRows--)
+        {
+            if (config.row[config.numRows].str)
+                free(config.row[config.numRows].str);
+        }
+        free(config.row);
+    }
 
     exit(retval);
 }
@@ -248,6 +261,29 @@ int GetTerminalSize(int* rows, int* cols)
     return 0;
 }
 
+/*** row ***/
+
+void AppendRow(char* str, int len)
+{
+    erow* newRows = realloc(config.row, sizeof(erow) * (config.numRows + 1));
+
+    if (newRows == NULL)
+        Die("Failed to realloc rows (AppendRow)");
+
+    config.row = newRows;
+
+    // Copy string content
+    config.row[config.numRows].size = len;
+    config.row[config.numRows].str = malloc(len + 1);
+
+    if (config.row[config.numRows].str == NULL)
+        Die("Failed to allocate memory for new row (AppendRow)");
+
+    memcpy(config.row[config.numRows].str, str, len);
+    config.row[config.numRows].str[len] = '\0';
+    ++config.numRows;
+}
+
 /*** file i/o ***/
 
 void OpenFile(char* file)
@@ -261,21 +297,13 @@ void OpenFile(char* file)
     size_t cap = 0;     // The max number of chars to read (Param scapegoat)
     ssize_t len = 0;    // Length of the read line
 
-    len = getline(&line, &cap, fp);
-
-    if (len != -1)
+    while ((len = getline(&line, &cap, fp)) != -1)
     {
         // Count number of chars in the line (excluding \r\n)
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
             --len;
 
-        config.row.size = len + 1;
-        config.row.str = malloc(len + 1); // TODO: not freed
-
-        memcpy(config.row.str, line, len);
-        config.row.str[len] = '\0'; // Null terminate the string
-
-        config.numRows = 1;
+        AppendRow(line, len);
     }
 
     free(line);
@@ -300,10 +328,12 @@ void ProcessKey(int c)
         case 'j':
         case ARROW_DOWN:
             if (config.cy < config.termRows - 1) ++config.cy;
+            else if (config.currRow < config.numRows - 1) ++config.currRow;
             break;
         case 'k':
         case ARROW_UP:
             if (config.cy > 0) --config.cy;
+            else if (config.currRow > 0) --config.currRow;
             break;
         case 'l':
         case ARROW_RIGHT:
@@ -323,6 +353,11 @@ void ProcessKey(int c)
         case KEY_END:
             config.cx = config.termCols - 1;
             break;
+
+
+        // Text editing
+        case '\b':
+            break;
     }
 }
 
@@ -330,7 +365,9 @@ void ProcessKey(int c)
 
 void DrawRows(estring* buf)
 {
-    for (int y = 0; y < config.termRows; ++y)
+    const int endRow = config.currRow + config.termRows;
+
+    for (int y = config.currRow; y < endRow; ++y)
     {
         if (y >= config.numRows)
         {
@@ -371,15 +408,15 @@ void DrawRows(estring* buf)
         else
         {
             // Print config.row's content
-            int len = (config.row.size > config.termCols) ? config.termCols
-                                                          : config.row.size;
+            int len = (config.row[y].size > config.termCols) ? config.termCols
+                                                             : config.row[y].size;
 
-            estrAppend(buf, config.row.str, len);
+            estrAppend(buf, config.row[y].str, len);
         }
 
         estrAppend(buf, "\x1b[K", 3); // Clear from cursor to end of row
 
-        if (y < config.termRows - 1)
+        if (y < endRow - 1)
             estrAppend(buf, "\r\n", 2); // Move cursor to next line
     }
 }
@@ -418,6 +455,8 @@ void Init()
 {
     config.cx = config.cy = 0;
     config.numRows = 0;
+    config.row = NULL;
+    config.currRow = 10;
 
     if (GetTerminalSize(&config.termRows, &config.termCols) == -1)
         Die("Failed to get terminal size (GetTerminalSize)");
