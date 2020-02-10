@@ -8,7 +8,7 @@ typedef struct estring
     int len;
 } estring;
 
-#define ESTR_INIT {NULL, 0}
+#define ESTR_INIT { NULL, 0 }
 
 void estrAppend(estring* es, const char* s, int len);
 void estrFree(estring* es);

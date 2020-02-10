@@ -23,7 +23,7 @@
 #include "estring.h"
 
 /*** defines ***/
-#define EDITOR_VERSION "0.0.1 Pre-Alpha"
+#define EDITOR_VERSION "0.0.2 Prototype"
 
 #define CTRL_KEY(k) (k & 0x1f)
 
@@ -314,6 +314,7 @@ void OpenFile(char* file)
 
 void ProcessKey(int c)
 {
+    erow* row = (config.cy >= config.numRows) ? NULL : &config.row[config.cy];
     switch (c)
     {
         case CTRL_KEY('q'):
@@ -335,23 +336,35 @@ void ProcessKey(int c)
             break;
         case 'l':
         case ARROW_RIGHT:
-            if (config.cx < config.termCols - 1) ++config.cx;
+            if (row && config.cx < row->size) ++config.cx;
             break;
 
         case PAGE_UP:
-            config.cy -= config.termRows + (config.cy - config.currRow);
+            config.cy -= config.termRows;
+            config.currRow -= config.termRows;
             if (config.cy < 0) config.cy = 0;
+            if (config.currRow < 0)
+            {
+                config.currRow = 0;
+                config.cy = 0; // TODO: Behaviour not exactly correct
+            }
             break;
         case PAGE_DOWN:
-            config.cy += config.termRows + (config.currRow + config.termRows - config.cy - 1);
+            config.cy += config.termRows;
+            config.currRow += config.termRows;
             if (config.cy >= config.numRows) config.cy = config.numRows - 1;
+            if (config.currRow >= config.numRows - config.termRows)
+            {
+                config.currRow = config.numRows - config.termRows - 1;
+                config.cy = config.numRows - 1; // TODO: Behaviour not exactly correct
+            }
             break;
 
         case KEY_HOME:
             config.cx = 0;
             break;
         case KEY_END:
-            config.cx = config.termCols - 1;
+            config.cx = config.row[config.currRow + config.cy].size;
             break;
 
 
@@ -359,6 +372,12 @@ void ProcessKey(int c)
         case '\b':
             break;
     }
+
+    // Prevent cursor from going out of the current row
+    row = (config.cy >= config.numRows) ? NULL : &config.row[config.cy];
+    int len = row ? row->size : 0;
+    if (config.cx > len)
+        config.cx = len;
 }
 
 /*** output ***/
@@ -367,9 +386,9 @@ void DrawRows(estring* buf)
 {
     for (int y = 0; y < config.termRows; ++y)
     {
-        int currRow = y + config.currRow;
+        int rowIndex = y + config.currRow;
 
-        if (currRow >= config.numRows)
+        if (rowIndex >= config.numRows)
         {
             if (config.numRows == 0 && y == config.termRows / 2) // Print the welcome message
             {
@@ -401,10 +420,10 @@ void DrawRows(estring* buf)
         else
         {
             // Print config.row's content
-            int len = (config.row[currRow].size > config.termCols) ? config.termCols
-                                                                   : config.row[currRow].size;
+            int len = (config.row[rowIndex].size > config.termCols) ? config.termCols
+                                                                   : config.row[rowIndex].size;
 
-            estrAppend(buf, config.row[currRow].str, len);
+            estrAppend(buf, config.row[rowIndex].str, len);
         }
 
         estrAppend(buf, "\x1b[K", 3); // Clear from cursor to end of row
