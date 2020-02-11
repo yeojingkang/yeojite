@@ -23,9 +23,11 @@
 #include "estring.h"
 
 /*** defines ***/
-#define EDITOR_VERSION "0.0.2 Prototype"
+#define EDITOR_VERSION "0.0.25 Prototype"
 
 #define CTRL_KEY(k) (k & 0x1f)
+
+#define TAB_SIZE 8
 
 enum editorKey
 {
@@ -37,13 +39,17 @@ enum editorKey
     PAGE_DOWN,
     KEY_HOME,
     KEY_END,
-    KEY_DEL
+    KEY_DEL,
+    KEY_BACKSPACE = 127
 };
 
 typedef struct erow
 {
     int size;
+    int dsize;
+
     char* str;
+    char* draw;
 } erow;
 
 /*** globals ***/
@@ -263,25 +269,93 @@ int GetTerminalSize(int* rows, int* cols)
 
 /*** row ***/
 
-void AppendRow(char* str, int len)
+void RowUpdateDraw(erow* row)
 {
-    erow* newRows = realloc(config.row, sizeof(erow) * (config.numRows + 1));
+    free(row->draw); // Remove previous string
 
-    if (newRows == NULL)
-        Die("Failed to realloc rows (AppendRow)");
+    // Count number of tabs in the row
+    int tabCount = 0;
+    for (int i = 0; i < row->size; ++i)
+    {
+        if (row->str[i] == '\t')
+            ++tabCount;
+    }
 
-    config.row = newRows;
+    row->draw = malloc(row->size + (tabCount * TAB_SIZE) + 1);
+    if (row->draw == NULL)
+        Die("Failed to allocate memory (RowUpdateDraw)");
+
+    row->dsize = 0;
+
+    // Copy str content to draw
+    for (int i = 0; i < row->size; ++i)
+    {
+        if (row->str[i] == '\t')
+        {
+            // Handle tab characters
+            row->draw[row->dsize++] = ' ';
+            while (row->dsize % TAB_SIZE)
+                row->draw[row->dsize++] = ' ';
+        }
+        else
+            row->draw[row->dsize++] = row->str[i];
+    }
+
+    // Null terminate draw
+    row->draw[row->dsize] = '\0';
+}
+
+void AddRow(char* str, int len)
+{
+    erow* newRow = realloc(config.row, sizeof(erow) * (config.numRows + 1));
+
+    if (newRow == NULL)
+        Die("Failed to realloc rows (AddRow)");
+
+    config.row = newRow;
 
     // Copy string content
     config.row[config.numRows].size = len;
     config.row[config.numRows].str = malloc(len + 1);
-
     if (config.row[config.numRows].str == NULL)
-        Die("Failed to allocate memory for new row (AppendRow)");
+        Die("Failed to allocate memory for new row (AddRow)");
 
     memcpy(config.row[config.numRows].str, str, len);
     config.row[config.numRows].str[len] = '\0';
+
+    // Init the draw string
+    config.row[config.numRows].dsize = 0;
+    config.row[config.numRows].draw = NULL;
+    RowUpdateDraw(config.row + config.numRows);
+
     ++config.numRows;
+}
+
+void RowInsertChar(erow* row, int index, char c)
+{
+    if (index > row->size) index = row->size;
+
+    char* newStr = realloc(row->str, row->size + 2);
+
+    if (newStr == NULL)
+        Die("Failed to realloc rows(RowInsertChar)");
+
+    row->str = newStr;
+    memmove(row->str + index + 1, row->str + index, row->size - index + 1);
+    ++row->size;
+    row->str[index] = c;
+
+    RowUpdateDraw(row);
+}
+
+void RowDeleteChar(erow* row, int index)
+{
+    if (index < 0 || index >= row->size) return;
+
+    memmove(row->str + index, row->str + index + 1, row->size - index);
+    --row->size;
+
+    RowUpdateDraw(row);
 }
 
 /*** file i/o ***/
@@ -303,7 +377,7 @@ void OpenFile(char* file)
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
             --len;
 
-        AppendRow(line, len);
+        AddRow(line, len);
     }
 
     free(line);
@@ -364,12 +438,13 @@ void ProcessKey(int c)
             config.cx = 0;
             break;
         case KEY_END:
-            config.cx = config.row[config.currRow + config.cy].size;
+            config.cx = row->size;
             break;
 
 
         // Text editing
-        case '\b':
+        case KEY_BACKSPACE:
+            RowDeleteChar(row, config.cx);
             break;
     }
 
@@ -420,10 +495,10 @@ void DrawRows(estring* buf)
         else
         {
             // Print config.row's content
-            int len = (config.row[rowIndex].size > config.termCols) ? config.termCols
-                                                                   : config.row[rowIndex].size;
+            int len = (config.row[rowIndex].dsize > config.termCols) ? config.termCols
+                                                                     : config.row[rowIndex].dsize;
 
-            estrAppend(buf, config.row[rowIndex].str, len);
+            estrAppend(buf, config.row[rowIndex].draw, len);
         }
 
         estrAppend(buf, "\x1b[K", 3); // Clear from cursor to end of row
@@ -432,10 +507,14 @@ void DrawRows(estring* buf)
             estrAppend(buf, "\r\n", 2); // Move cursor to next line
     }
 
+}
+
+void DrawBottomRow(estring* buf)
+{
     // Print the cursor position
     char pos[64];
     int len = snprintf(pos, sizeof(pos),
-                       "%3d:%3d", config.cx, config.cy);
+                       "%3d:%-3d", config.cx, config.cy);
     estrAppend(buf, pos, len);
 }
 
@@ -464,6 +543,7 @@ void PrintScreen()
     estrAppend(&buffer, "\x1b[H", 3); // H (Cursor Position (3 byte): <line>;<column>H)
 
     DrawRows(&buffer);
+    DrawBottomRow(&buffer);
 
     char cursorPos[32];
     int len = snprintf(cursorPos, sizeof(cursorPos),
